@@ -13,20 +13,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Backup workflow file
-        run: |
-          mkdir -p /tmp/backup
-          if [ -f .github/workflows/unzip-flatten.yml ]; then
-            cp .github/workflows/unzip-flatten.yml /tmp/backup/
-            echo "WORKFLOW_EXISTS=true" >> $GITHUB_ENV
-          else
-            echo "WORKFLOW_EXISTS=false" >> $GITHUB_ENV
-          fi
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract ZIP files and flatten structure
+      - name: Extract ZIP files safely
         run: |
           set -euo pipefail
           shopt -s dotglob
@@ -34,9 +24,8 @@ jobs:
             TEMP_DIR=$(mktemp -d)
             unzip -o -q "$zip_file" -d "$TEMP_DIR"
 
-            if [ -d "$TEMP_DIR/.github" ]; then
-              mv "$TEMP_DIR/.github" "$TEMP_DIR/.github-extracted"
-            fi
+            # تجاهل أي _workflows عشان ميحصلش conflict
+            rm -rf "$TEMP_DIR/.github/_workflows" || true
 
             if find "$TEMP_DIR" -maxdepth 1 -type f | grep -q .; then
               cp -r "$TEMP_DIR"/* .
@@ -55,31 +44,24 @@ jobs:
           done < <(find . -maxdepth 1 -type f -name "*.zip" -print0)
           shopt -u dotglob
 
-      - name: Delete workflow file only
-        if: env.WORKFLOW_EXISTS == 'true'
-        run: |
-          rm -f .github/workflows/unzip-flatten.yml
-          if [ -d .github/workflows ] && [ -z "$(ls -A .github/workflows 2>/dev/null)" ]; then
-            rmdir .github/workflows || true
-          fi
-
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Check for changes
-        id: git-status
+      - name: Commit and push
         run: |
           if git status --porcelain | grep -q .; then
-            echo "has_changes=true" >> $GITHUB_OUTPUT
+            git add -A
+            git commit -m "Extract ZIP contents"
+            git push
           else
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-          fi
+            echo "No changes"
 
-      - name: Commit and push changes
-        if: steps.git-status.outputs.has_changes == 'true'
+      - name: Delete this workflow file
+        if: always()
         run: |
-          git add -A
-          git commit -m "Extract and flatten ZIP contents"
-          git push
+          rm -f .github/workflows/unzip-flatten.yml
+          if [ -d .github/workflows ] && [ -z "$(ls -A .github/workflows 2>/dev/null)" ]; then
+            rmdir .github/workflows || true
+          fi
