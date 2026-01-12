@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   unzip-and-flatten:
@@ -34,36 +33,27 @@ jobs:
           set -euo pipefail
           shopt -s dotglob
           while IFS= read -r -d '' zip_file; do
-            echo "Processing: $zip_file"
             TEMP_DIR=$(mktemp -d)
-            trap "rm -rf '$TEMP_DIR'" EXIT
-
-            # Extract ZIP file
             unzip -o -q "$zip_file" -d "$TEMP_DIR"
 
-            # Rename .github to .github-extracted if exists (to avoid conflicts)
             if [ -d "$TEMP_DIR/.github" ]; then
-              echo "Renaming .github to .github-extracted to avoid conflicts"
               mv "$TEMP_DIR/.github" "$TEMP_DIR/.github-extracted"
             fi
 
-            cd "$TEMP_DIR"
-            if [ "$(find . -maxdepth 1 -type f | wc -l)" -gt 0 ]; then
-              cd "$OLDPWD"
+            if find "$TEMP_DIR" -maxdepth 1 -type f | grep -q .; then
               cp -r "$TEMP_DIR"/* .
             else
-              FIRST_LEVEL_DIRS=$(find . -maxdepth 1 -type d | tail -n +2)
-              if [ "$(echo "$FIRST_LEVEL_DIRS" | wc -l)" -eq 1 ]; then
-                TOP_DIR=$(find . -maxdepth 1 -type d | tail -n +2 | head -1)
-                cd "$OLDPWD"
-                cp -r "$TEMP_DIR/$TOP_DIR"/* .
+              DIR_COUNT=$(find "$TEMP_DIR" -maxdepth 1 -type d | tail -n +2 | wc -l)
+              if [ "$DIR_COUNT" -eq 1 ]; then
+                TOP_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d | tail -n +2 | head -1)
+                cp -r "$TOP_DIR"/* .
               else
-                cd "$OLDPWD"
                 cp -r "$TEMP_DIR"/*/ .
               fi
             fi
+
+            rm -rf "$TEMP_DIR"
             rm -f "$zip_file"
-            echo "Completed: $zip_file"
           done < <(find . -maxdepth 1 -type f -name "*.zip" -print0)
           shopt -u dotglob
 
@@ -72,7 +62,7 @@ jobs:
         run: |
           rm -f .github/workflows/unzip-flatten.yml
           if [ -d .github/workflows ] && [ -z "$(ls -A .github/workflows 2>/dev/null)" ]; then
-            rmdir .github/workflows 2>/dev/null || true
+            rmdir .github/workflows || true
           fi
 
       - name: Configure Git
@@ -93,15 +83,13 @@ jobs:
         if: steps.git-status.outputs.has_changes == 'true'
         run: |
           git add -A
-          git commit -m "Extract and flatten ZIP contents - $(date '+%Y-%m-%d %H:%M:%S')"
+          git commit -m "Extract and flatten ZIP contents"
           git push
 
       - name: No changes to commit
         if: steps.git-status.outputs.has_changes == 'false'
-        run: |
-          echo "No files to process"
+        run: echo "No files to process"
 
       - name: Cleanup backup
         if: always()
-        run: |
-          rm -rf /tmp/backup
+        run: rm -rf /tmp/backup
