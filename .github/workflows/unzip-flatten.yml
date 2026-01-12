@@ -5,57 +5,74 @@ on:
     paths:
       - '**.zip'
 
-permissions:
-  contents: write
-
 jobs:
   unzip-and-flatten:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract ZIP files safely
+      - name: Extract ZIP files and flatten structure
         run: |
           set -euo pipefail
-          shopt -s dotglob
-          for zip_file in *.zip; do
-            [ -f "$zip_file" ] || continue
+          
+          while IFS= read -r -d '' zip_file; do
+            echo "Processing: $zip_file"
+            
             TEMP_DIR=$(mktemp -d)
+            trap "rm -rf '$TEMP_DIR'" EXIT
+            
             unzip -o -q "$zip_file" -d "$TEMP_DIR"
-
-            # تجاهل أي _workflows
-            rm -rf "$TEMP_DIR/.github/_workflows" || true
-
-            FILES=$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -print)
-            for item in $FILES; do
-              cp -r "$item" .
-            done
-
-            rm -rf "$TEMP_DIR"
+            
+            cd "$TEMP_DIR"
+            
+            if [ "$(find . -maxdepth 1 -type f | wc -l)" -gt 0 ]; then
+              cd "$OLDPWD"
+              cp -r "$TEMP_DIR"/* .
+            else
+              FIRST_LEVEL_DIRS=$(find . -maxdepth 1 -type d | tail -n +2)
+              
+              if [ "$(echo "$FIRST_LEVEL_DIRS" | wc -l)" -eq 1 ]; then
+                TOP_DIR=$(find . -maxdepth 1 -type d | tail -n +2 | head -1)
+                cd "$OLDPWD"
+                cp -r "$TEMP_DIR/$TOP_DIR"/* .
+              else
+                cd "$OLDPWD"
+                cp -r "$TEMP_DIR"/*/ .
+              fi
+            fi
+            
             rm -f "$zip_file"
-          done
-          shopt -u dotglob
+            echo "Completed: $zip_file"
+            
+          done < <(find . -maxdepth 1 -type f -name "*.zip" -print0)
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit and push
+      - name: Check for changes
+        id: git-status
         run: |
           if git status --porcelain | grep -q .; then
-            git add -A
-            git commit -m "Extract ZIP contents"
-            git push
+            echo "has_changes=true" >> $GITHUB_OUTPUT
           else
-            echo "No changes"
-
-      - name: Delete this workflow file
-        if: always()
-        run: |
-          rm -f .github/workflows/unzip-flatten.yml
-          if [ -d .github/workflows ] && [ -z "$(ls -A .github/workflows 2>/dev/null)" ]; then
-            rmdir .github/workflows || true
+            echo "has_changes=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Commit and push changes
+        if: steps.git-status.outputs.has_changes == 'true'
+        run: |
+          git add -A
+          git commit -m "Extract and flatten ZIP contents - $(date '+%Y-%m-%d %H:%M:%S')"
+          git push
+
+      - name: No changes to commit
+        if: steps.git-status.outputs.has_changes == 'false'
+        run: |
+          echo "No files to process"
